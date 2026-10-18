@@ -178,3 +178,5 @@ alter table public.orders add column if not exists user_id uuid references auth.
 alter table public.orders add column if not exists shipping_address text;
 alter table public.orders add column if not exists city text;
 alter table public.orders add column if not exists postal_code text;
+
+-- Schema verified and finalized for live user profiles and customer parcel tracking.
