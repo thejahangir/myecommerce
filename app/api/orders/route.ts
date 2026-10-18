@@ -10,9 +10,13 @@ export interface OrderItem {
 
 export interface OrderRecord {
   id: string;
+  user_id?: string;
   customer_name: string;
   customer_email: string;
   customer_phone: string;
+  shipping_address?: string;
+  city?: string;
+  postal_code?: string;
   total_price: number;
   status: "Pending" | "Processing" | "Shipped" | "Delivered";
   razorpay_payment_id?: string;
@@ -24,9 +28,13 @@ export interface OrderRecord {
 const INITIAL_SAMPLE_ORDERS: OrderRecord[] = [
   {
     id: "ORD-849201",
+    user_id: "demo-user-123",
     customer_name: "Sarah Jenkins",
     customer_email: "sarah.j@example.com",
     customer_phone: "+91 98765 43210",
+    shipping_address: "Flat 402, Skyline Residency, Bandra West",
+    city: "Mumbai",
+    postal_code: "400050",
     total_price: 3499.0,
     status: "Processing",
     razorpay_payment_id: "pay_rzp_live_94812",
@@ -41,6 +49,9 @@ const INITIAL_SAMPLE_ORDERS: OrderRecord[] = [
     customer_name: "Rohit Sharma",
     customer_email: "rohit.s@example.com",
     customer_phone: "+91 98123 45678",
+    shipping_address: "12/A Park View Apartments, Indiranagar",
+    city: "Bengaluru",
+    postal_code: "560038",
     total_price: 799.0,
     status: "Pending",
     razorpay_payment_id: "pay_rzp_mock_39201",
@@ -55,6 +66,9 @@ const INITIAL_SAMPLE_ORDERS: OrderRecord[] = [
     customer_name: "Elena Vance",
     customer_email: "elena.v@example.com",
     customer_phone: "+91 97654 32109",
+    shipping_address: "74 Cyber City Tech Park Road",
+    city: "Gurugram",
+    postal_code: "122002",
     total_price: 2999.0,
     status: "Shipped",
     razorpay_payment_id: "pay_rzp_live_10928",
@@ -69,6 +83,9 @@ const INITIAL_SAMPLE_ORDERS: OrderRecord[] = [
     customer_name: "Alex Chen",
     customer_email: "alex.c@example.com",
     customer_phone: "+91 99887 76655",
+    shipping_address: "B-201 Green Valley, Jubilee Hills",
+    city: "Hyderabad",
+    postal_code: "500033",
     total_price: 2499.0,
     status: "Delivered",
     razorpay_payment_id: "pay_rzp_live_83910",
@@ -100,8 +117,8 @@ function getSupabase() {
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     "";
-  if (!url || !key || url.includes("supabase.co")) {
-    return null; // Return null for placeholder url to avoid timeout
+  if (!url || !key || url === "https://supabase.co" || url.includes("placeholder")) {
+    return null; // Return null for invalid placeholder url to avoid timeout
   }
   try {
     return createClient(url, key);
@@ -124,18 +141,38 @@ interface CartItemPayload {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { cartItems, customerDetails, totalPrice, paymentId, orderId } = body;
+    const {
+      cartItems,
+      customerDetails,
+      totalPrice,
+      paymentId,
+      orderId,
+      userId,
+      user_id,
+      shippingAddress,
+      city,
+      postalCode,
+    } = body;
 
     const store = getStore();
     const fallbackId = orderId && String(orderId).startsWith("order_") 
       ? `ORD-${orderId.slice(-6).toUpperCase()}`
       : `ORD-${Date.now().toString().slice(-6)}`;
 
+    const effectiveUserId = userId || user_id || customerDetails?.userId || undefined;
+    const effectiveShipping = shippingAddress || customerDetails?.shipping_address || customerDetails?.address || "";
+    const effectiveCity = city || customerDetails?.city || "";
+    const effectivePostal = postalCode || customerDetails?.postal_code || customerDetails?.postalCode || "";
+
     const newOrder: OrderRecord = {
       id: fallbackId,
+      user_id: effectiveUserId,
       customer_name: customerDetails?.name || "Customer",
       customer_email: customerDetails?.email || "customer@example.com",
       customer_phone: customerDetails?.phone || "+91 98765 43210",
+      shipping_address: effectiveShipping,
+      city: effectiveCity,
+      postal_code: effectivePostal,
       total_price: Number(totalPrice) || 0,
       status: "Pending",
       razorpay_payment_id: paymentId || undefined,
@@ -158,9 +195,13 @@ export async function POST(req: NextRequest) {
         const { data: dbOrder, error: orderError } = await supabase
           .from("orders")
           .insert({
+            user_id: effectiveUserId || null,
             customer_name: newOrder.customer_name,
             customer_email: newOrder.customer_email,
             customer_phone: newOrder.customer_phone,
+            shipping_address: effectiveShipping || null,
+            city: effectiveCity || null,
+            postal_code: effectivePostal || null,
             total_price: newOrder.total_price,
             status: "Pending",
             razorpay_payment_id: newOrder.razorpay_payment_id || null,
@@ -203,17 +244,20 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// GET: Fetch all orders for admin dashboard or single order by ?id=
+// GET: Fetch all orders, or single order by ?id=, or user orders by ?userId= or ?email=
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const orderId = searchParams.get("id");
+    const userId = searchParams.get("userId") || searchParams.get("user_id");
+    const userEmail = searchParams.get("email");
     const store = getStore();
 
+    // 1. Single order lookup (for customer tracking)
     if (orderId) {
       const cleanId = decodeURIComponent(orderId).trim().toLowerCase();
 
-      // 1. First, search local resilient store for exact match or substring match
+      // First, search local resilient store
       const localMatch = store.orders.find((o) => {
         const oId = String(o.id || "").toLowerCase();
         const rzpOrderId = String(o.razorpay_order_id || "").toLowerCase();
@@ -231,7 +275,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ order: localMatch });
       }
 
-      // 2. If not found in local store, attempt Supabase query if available
+      // If not found in local store, attempt Supabase query
       const supabase = getSupabase();
       if (supabase) {
         try {
@@ -242,7 +286,6 @@ export async function GET(req: NextRequest) {
             .single();
 
           if (!error && data) {
-            // Cache into store
             store.orders.unshift(data);
             return NextResponse.json({ order: data });
           }
@@ -251,7 +294,7 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // 3. Fallback: Create dynamic entry so tracking never fails with 404
+      // Fallback: Create dynamic entry so tracking never fails with 404
       const dynamicOrder: OrderRecord = {
         id: orderId,
         customer_name: "Customer",
@@ -269,7 +312,41 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ order: dynamicOrder });
     }
 
-    // List all orders for Admin Dashboard
+    // 2. Filter orders by user (for Profile Dashboard Tab 2)
+    if (userId || userEmail) {
+      const supabase = getSupabase();
+      if (supabase) {
+        try {
+          let query = supabase.from("orders").select(`*, order_items (*)`);
+          if (userId && userEmail) {
+            query = query.or(`user_id.eq.${userId},customer_email.eq.${userEmail}`);
+          } else if (userId) {
+            query = query.eq("user_id", userId);
+          } else if (userEmail) {
+            query = query.eq("customer_email", userEmail);
+          }
+
+          const { data: dbOrders, error } = await query.order("created_at", { ascending: false });
+
+          if (!error && dbOrders && dbOrders.length > 0) {
+            return NextResponse.json({ orders: dbOrders });
+          }
+        } catch (err) {
+          console.warn("Supabase user orders fetch notice:", err);
+        }
+      }
+
+      // Fallback to local store filtered by userId or email
+      const userOrders = store.orders.filter((o) => {
+        if (userId && o.user_id === userId) return true;
+        if (userEmail && o.customer_email.toLowerCase() === userEmail.toLowerCase()) return true;
+        return false;
+      });
+
+      return NextResponse.json({ orders: userOrders });
+    }
+
+    // 3. List all orders for Admin Dashboard
     const supabase = getSupabase();
     if (supabase) {
       try {
@@ -279,7 +356,6 @@ export async function GET(req: NextRequest) {
           .order("created_at", { ascending: false });
 
         if (!error && dbOrders && dbOrders.length > 0) {
-          // Merge with any session orders
           const existingIds = new Set(dbOrders.map((o) => o.id));
           const sessionOnly = store.orders.filter((o) => !existingIds.has(o.id));
           return NextResponse.json({ orders: [...sessionOnly, ...dbOrders] });

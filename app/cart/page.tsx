@@ -25,8 +25,11 @@ import {
   AlertCircle,
   Copy,
   Check,
+  User,
+  MapPin,
 } from "lucide-react";
 import { useCart } from "@/src/context/CartContext";
+import { supabase } from "@/src/utils/supabase/client";
 
 export default function CartPage() {
   const router = useRouter();
@@ -37,6 +40,87 @@ export default function CartPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [copiedItem, setCopiedItem] = useState<string | null>(null);
+
+  // Authentication & Customer Shipping Autofill State
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    email?: string;
+    full_name?: string;
+  } | null>(null);
+  const [customerName, setCustomerName] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [shippingAddress, setShippingAddress] = useState("");
+  const [city, setCity] = useState("");
+  const [postalCode, setPostalCode] = useState("");
+  const [isProfileLoaded, setIsProfileLoaded] = useState(false);
+
+  // Check auth state on mount and pull saved shipping address
+  React.useEffect(() => {
+    async function loadUserAndProfile() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        let resolvedId = user?.id;
+        let resolvedEmail = user?.email;
+        let resolvedName = user?.user_metadata?.full_name || "";
+
+        if (!resolvedId) {
+          const cached = localStorage.getItem("apex_user_profile");
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              resolvedId = parsed.id;
+              resolvedEmail = parsed.email;
+              resolvedName = parsed.full_name || "";
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (resolvedId) {
+          setCurrentUser({ id: resolvedId, email: resolvedEmail, full_name: resolvedName });
+          setCustomerName(resolvedName || "Customer");
+          setCustomerEmail(resolvedEmail || "shopper@apexstore.com");
+
+          // Automatically pull their saved shipping_address to autofill the billing fields
+          try {
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("*")
+              .eq("id", resolvedId)
+              .single();
+
+            if (profile) {
+              if (profile.full_name) setCustomerName(profile.full_name);
+              if (profile.phone) setCustomerPhone(profile.phone);
+              if (profile.shipping_address) setShippingAddress(profile.shipping_address);
+              if (profile.city) setCity(profile.city);
+              if (profile.postal_code) setPostalCode(profile.postal_code);
+              setIsProfileLoaded(true);
+            }
+          } catch {
+            const cached = localStorage.getItem("apex_user_profile");
+            if (cached) {
+              try {
+                const parsed = JSON.parse(cached);
+                if (parsed.phone) setCustomerPhone(parsed.phone);
+                if (parsed.shipping_address) setShippingAddress(parsed.shipping_address);
+                if (parsed.city) setCity(parsed.city);
+                if (parsed.postal_code) setPostalCode(parsed.postal_code);
+                setIsProfileLoaded(true);
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Auth check in cart:", err);
+      }
+    }
+    loadUserAndProfile();
+  }, []);
 
   const copyToClipboard = (text: string, label: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
@@ -87,6 +171,12 @@ export default function CartPage() {
   const handleProceedToPayment = async () => {
     if (cart.length === 0) return;
 
+    // Requirement 3: Check auth state. If not logged in, redirect directly to /login
+    if (!currentUser) {
+      router.push("/login?redirect=/cart");
+      return;
+    }
+
     setIsProcessing(true);
     setCheckoutError(null);
 
@@ -136,10 +226,18 @@ export default function CartPage() {
                 body: JSON.stringify({
                   cartItems: cart,
                   customerDetails: {
-                    name: "Customer",
-                    email: "shopper@apexstore.com",
-                    phone: "9876543210",
+                    userId: currentUser?.id,
+                    name: customerName || currentUser?.full_name || "Customer",
+                    email: customerEmail || currentUser?.email || "shopper@apexstore.com",
+                    phone: customerPhone || "9876543210",
+                    shipping_address: shippingAddress,
+                    city: city,
+                    postal_code: postalCode,
                   },
+                  userId: currentUser?.id,
+                  shippingAddress,
+                  city,
+                  postalCode,
                   totalPrice: grandTotal,
                   paymentId: response.razorpay_payment_id,
                   orderId: response.razorpay_order_id,
@@ -160,9 +258,9 @@ export default function CartPage() {
             }
           },
           prefill: {
-            name: "Customer",
-            email: "shopper@apexstore.com",
-            contact: "9876543210",
+            name: customerName || currentUser?.full_name || "Customer",
+            email: customerEmail || currentUser?.email || "shopper@apexstore.com",
+            contact: customerPhone || "9876543210",
           },
           theme: {
             color: "#4f46e5",
@@ -204,7 +302,7 @@ export default function CartPage() {
       return;
     }
 
-    // Success simulation: save order in Supabase
+    // Success simulation: save order in Supabase & memory store
     const mockPaymentId = `pay_rzp_mock_${Date.now().toString().slice(-8)}`;
     setIsRazorpayModalOpen(false);
     setIsProcessing(true);
@@ -216,10 +314,18 @@ export default function CartPage() {
         body: JSON.stringify({
           cartItems: cart,
           customerDetails: {
-            name: "Customer",
-            email: "shopper@apexstore.com",
-            phone: "9876543210",
+            userId: currentUser?.id,
+            name: customerName || currentUser?.full_name || "Customer",
+            email: customerEmail || currentUser?.email || "shopper@apexstore.com",
+            phone: customerPhone || "9876543210",
+            shipping_address: shippingAddress,
+            city: city,
+            postal_code: postalCode,
           },
+          userId: currentUser?.id,
+          shippingAddress,
+          city,
+          postalCode,
           totalPrice: grandTotal,
           paymentId: mockPaymentId,
           orderId: currentOrder.id,
@@ -646,6 +752,139 @@ export default function CartPage() {
                   <p className="mt-2 text-xs font-medium text-rose-600">{promoError}</p>
                 )}
               </div>
+
+              {/* Delivery & Shipping Address (Autofilled from Profile) */}
+              <div className="rounded-3xl border border-slate-200/90 bg-white p-6 sm:p-7 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-5 w-5 text-indigo-600" />
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-950">
+                        Delivery & Shipping Address
+                      </h3>
+                      <p className="text-[11px] text-slate-500">
+                        {currentUser
+                          ? "Autofilled from your saved account profile"
+                          : "Account required to complete delivery & order tracking"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {currentUser ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 border border-emerald-200">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>{isProfileLoaded ? "Autofilled" : "Account Active"}</span>
+                    </span>
+                  ) : (
+                    <Link
+                      href="/login?redirect=/cart"
+                      className="inline-flex items-center gap-1 rounded-xl bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition-colors"
+                    >
+                      <Lock className="h-3.5 w-3.5" />
+                      <span>Sign In →</span>
+                    </Link>
+                  )}
+                </div>
+
+                {currentUser ? (
+                  <div className="space-y-4 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Recipient Name
+                        </label>
+                        <div className="relative">
+                          <User className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                          <input
+                            type="text"
+                            value={customerName}
+                            onChange={(e) => setCustomerName(e.target.value)}
+                            placeholder="Full Name"
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs font-medium text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Phone Number
+                        </label>
+                        <input
+                          type="tel"
+                          value={customerPhone}
+                          onChange={(e) => setCustomerPhone(e.target.value)}
+                          placeholder="+91 98765 43210"
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 px-3 text-xs font-medium text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Shipping Address (Flat / House No., Street, Area)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={shippingAddress}
+                        onChange={(e) => setShippingAddress(e.target.value)}
+                        placeholder="Enter your street delivery address..."
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 px-3 text-xs font-medium text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          City
+                        </label>
+                        <input
+                          type="text"
+                          value={city}
+                          onChange={(e) => setCity(e.target.value)}
+                          placeholder="e.g. Mumbai"
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 px-3 text-xs font-medium text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Postal / PIN Code
+                        </label>
+                        <input
+                          type="text"
+                          value={postalCode}
+                          onChange={(e) => setPostalCode(e.target.value)}
+                          placeholder="e.g. 400050"
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 px-3 text-xs font-medium text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1 text-[11px] text-slate-500">
+                      <span>Logged in as <strong>{currentUser.email}</strong></span>
+                      <Link
+                        href="/profile"
+                        className="text-indigo-600 hover:text-indigo-800 font-semibold underline"
+                      >
+                        Edit Profile Address →
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4 space-y-3">
+                    <p className="text-xs text-slate-700 leading-relaxed">
+                      You are currently browsing as a guest. Please sign in or register to autofill your saved shipping address and track your delivery.
+                    </p>
+                    <Link
+                      href="/login?redirect=/cart"
+                      className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/20 hover:bg-indigo-500 transition-all"
+                    >
+                      <Lock className="h-3.5 w-3.5" />
+                      <span>Sign In or Create Account</span>
+                    </Link>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Right Column: Order Summary (4 cols) */}
@@ -846,12 +1085,28 @@ export default function CartPage() {
                 <button
                   onClick={handleProceedToPayment}
                   disabled={isProcessing}
-                  className="w-full flex items-center justify-center gap-2 rounded-2xl bg-indigo-600 py-4 text-sm font-bold text-white shadow-lg shadow-indigo-600/30 hover:bg-indigo-500 hover:shadow-indigo-600/40 transition-all active:scale-[0.98] disabled:opacity-70 cursor-pointer"
+                  className={`w-full flex items-center justify-center gap-2 rounded-2xl py-4 text-sm font-bold text-white shadow-lg transition-all active:scale-[0.98] disabled:opacity-70 cursor-pointer ${
+                    currentUser
+                      ? "bg-indigo-600 shadow-indigo-600/30 hover:bg-indigo-500 hover:shadow-indigo-600/40"
+                      : "bg-slate-900 shadow-slate-900/30 hover:bg-indigo-600 hover:shadow-indigo-600/30"
+                  }`}
                 >
                   <Lock className="h-4 w-4" />
-                  <span>{isProcessing ? "Initializing Razorpay..." : "Proceed to Payment"}</span>
+                  <span>
+                    {isProcessing
+                      ? "Initializing Razorpay..."
+                      : currentUser
+                      ? `Proceed to Payment (₹${grandTotal.toFixed(2)})`
+                      : "Sign In to Proceed to Payment"}
+                  </span>
                   {!isProcessing && <ArrowRight className="h-4 w-4 ml-1" />}
                 </button>
+
+                {!currentUser && (
+                  <p className="text-center text-[11px] text-slate-500 font-medium">
+                    You will be directed to Sign In before completing payment.
+                  </p>
+                )}
 
                 {/* Trust and Assurance Badges */}
                 <div className="border-t border-slate-100 pt-5 space-y-2.5">

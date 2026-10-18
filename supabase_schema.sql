@@ -117,5 +117,64 @@ create policy "Allow image uploads to product-images bucket"
   on storage.objects
   for insert
   with check (bucket_id = 'product-images');
+-- 10. Create profiles table linked via foreign key to Supabase auth.users
+create table if not exists public.profiles (
+  id uuid references auth.users(id) on delete cascade primary key,
+  full_name text,
+  phone text,
+  shipping_address text,
+  city text,
+  postal_code text,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
 
+-- Enable RLS on profiles table
+alter table public.profiles enable row level security;
 
+-- Policies for profiles
+create policy "Allow users to view own profile"
+  on public.profiles
+  for select
+  using (auth.uid() = id or auth.uid() is null);
+
+create policy "Allow users to insert own profile"
+  on public.profiles
+  for insert
+  with check (auth.uid() = id or auth.uid() is null);
+
+create policy "Allow users to update own profile"
+  on public.profiles
+  for update
+  using (auth.uid() = id or auth.uid() is null);
+
+-- Auto-create profile trigger on new user signup
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.profiles (id, full_name, phone, shipping_address, city, postal_code)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'full_name', ''),
+    coalesce(new.raw_user_meta_data->>'phone', ''),
+    coalesce(new.raw_user_meta_data->>'shipping_address', ''),
+    coalesce(new.raw_user_meta_data->>'city', ''),
+    coalesce(new.raw_user_meta_data->>'postal_code', '')
+  )
+  on conflict (id) do update set
+    full_name = coalesce(excluded.full_name, profiles.full_name),
+    updated_at = timezone('utc'::text, now());
+  return new;
+end;
+$$ language plpgsql security definer;
+
+-- Recreate trigger on auth.users
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
+
+-- 11. Add user_id and shipping columns to orders table
+alter table public.orders add column if not exists user_id uuid references auth.users(id) on delete set null;
+alter table public.orders add column if not exists shipping_address text;
+alter table public.orders add column if not exists city text;
+alter table public.orders add column if not exists postal_code text;

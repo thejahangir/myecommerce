@@ -1,13 +1,46 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { ShoppingBag, Zap, Menu, X } from "lucide-react";
+import { ShoppingBag, Zap, Menu, X, User } from "lucide-react";
 import { useCart } from "@/src/context/CartContext";
+import { supabase } from "@/src/utils/supabase/client";
 
 export default function Navbar() {
   const { totalCount, setIsCartOpen } = useCart();
-  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [userName, setUserName] = useState<string | null>(null);
+
+  // Sync auth state
+  useEffect(() => {
+    async function syncAuth() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setUserName(user.user_metadata?.full_name || "Account");
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const cached = localStorage.getItem("apex_user_profile");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          setUserName(parsed.full_name || "Account");
+        } else {
+          setUserName(null);
+        }
+      } catch {
+        setUserName(null);
+      }
+    }
+
+    syncAuth();
+    window.addEventListener("storage", syncAuth);
+    return () => window.removeEventListener("storage", syncAuth);
+  }, []);
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
@@ -33,17 +66,33 @@ export default function Navbar() {
             <Link href="/" className="hover:text-indigo-600 transition-colors">
               Home
             </Link>
-            <a href="#products" className="hover:text-indigo-600 transition-colors">
+            <Link href="/#products" className="hover:text-indigo-600 transition-colors">
               Products
-            </a>
+            </Link>
+            <Link
+              href={userName ? "/profile" : "/login"}
+              className="flex items-center gap-1.5 hover:text-indigo-600 transition-colors"
+            >
+              <User className="h-4 w-4" />
+              <span>{userName ? "Profile" : "Sign In"}</span>
+            </Link>
             <Link href="/admin" className="hover:text-indigo-600 transition-colors">
               Admin
             </Link>
           </nav>
         </div>
 
-        {/* Right Section: Cart & Mobile Menu Toggle */}
+        {/* Right Section: User & Cart & Mobile Menu Toggle */}
         <div className="flex items-center gap-3">
+          {/* User Account Quick Link (Desktop) */}
+          <Link
+            href={userName ? "/profile" : "/login"}
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-600 hover:text-indigo-600 transition-all cursor-pointer"
+          >
+            <User className="h-3.5 w-3.5" />
+            <span>{userName ? userName.split(" ")[0] : "Sign In"}</span>
+          </Link>
+
           {/* Clickable Cart Icon with Dynamic Badge */}
           <button
             onClick={() => setIsCartOpen(true)}
@@ -83,13 +132,21 @@ export default function Navbar() {
             >
               Home
             </Link>
-            <a
-              href="#products"
+            <Link
+              href="/#products"
               onClick={() => setMobileMenuOpen(false)}
               className="py-1 hover:text-indigo-600"
             >
               Products
-            </a>
+            </Link>
+            <Link
+              href={userName ? "/profile" : "/login"}
+              onClick={() => setMobileMenuOpen(false)}
+              className="py-1 flex items-center gap-2 hover:text-indigo-600"
+            >
+              <User className="h-4 w-4" />
+              <span>{userName ? `Profile (${userName})` : "Sign In / Register"}</span>
+            </Link>
             <Link
               href="/admin"
               onClick={() => setMobileMenuOpen(false)}
